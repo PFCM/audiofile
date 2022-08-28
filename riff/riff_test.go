@@ -12,13 +12,13 @@ import (
 func TestReader(t *testing.T) {
 	// See if we can just read them without trouble.
 	// TODO: real tests.
-	files, err := fs.Glob(os.DirFS("./testdata"), "*")
+	files, err := fs.Glob(os.DirFS("../testdata"), "*")
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, name := range files {
 		t.Run(name, func(t *testing.T) {
-			path := filepath.Join("./testdata", name)
+			path := filepath.Join("../testdata", name)
 			f, err := os.Open(path)
 			if err != nil {
 				t.Fatalf("opening file: %v", err)
@@ -45,7 +45,6 @@ func TestReader(t *testing.T) {
 				if err != nil {
 					t.Fatalf("reading chunk %d: %v", len(chunks), err)
 				}
-				fmt.Printf("%+v\n", c)
 				if len(data) != int(c.Size) {
 					t.Fatalf("reading chunk %d data: want: %d bytes, got: %d",
 						len(chunks), c.Size, len(data))
@@ -55,7 +54,11 @@ func TestReader(t *testing.T) {
 					data:  data,
 				})
 			}
-			t.Fatal(chunks)
+			fmt.Printf("%d chunks\n", len(chunks))
+			for _, c := range chunks {
+				fmt.Printf("%v: %d bytes\n", c.chunk, len(c.data))
+			}
+			t.Fatal("no")
 		})
 	}
 }

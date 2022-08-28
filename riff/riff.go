@@ -26,10 +26,11 @@ type Reader struct {
 	// Form is the type of the RIFF file.
 	Form string
 
-	r     io.Reader
-	hdr   chunkHeader
-	chunk Chunk
-	pad   bool
+	r       io.Reader
+	hdr     chunkHeader
+	chunk   Chunk
+	pad     bool
+	scratch [4096]byte
 }
 
 // NewReader validates the RIFF header and returns a Reader ready to read
@@ -59,21 +60,38 @@ func NewReader(r io.Reader) (*Reader, error) {
 // ReadChunk reads the next chunk. The data in the chunk is only valid
 // until the next call to ReadChunk.
 func (r *Reader) ReadChunk() (*Chunk, error) {
-	// TODO: what if they skipped the previous chunk?
-	// wind that reader through until EOF? Require a ReadSeeker?
+	// Make sure the previous chunk was read all the way through,
+	// so the underlying reader is at the start of the next chunk.
+	if r.chunk.Reader != nil {
+		for {
+			_, err := r.chunk.Reader.Read(r.scratch[:])
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	// Make sure to read the pad byte if present.
+	if r.hdr.pad {
+		_, err := r.r.Read(r.scratch[:1])
+		if err == io.EOF {
+			return nil, errors.New("unexpected EOF: missing pad byte")
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
 
-	// We expect the reader to be at the start of the next chunk.
+	// Now we're ready to read the next chunk.
 	if err := readChunkHeader(r.r, &r.hdr); err != nil {
 		return nil, err
 	}
-	// TODO: more tiny allocs to avoid
 	r.chunk.Identifier = string(r.hdr.id[:])
 	r.chunk.Size = int(r.hdr.size)
 
-	// TODO: deal with pad byte
 	r.chunk.Reader = &io.LimitedReader{R: r.r, N: int64(r.hdr.size)}
-
-	// TODO: what do we do if there's a pad byte at the very end?
 
 	return &r.chunk, nil
 }
