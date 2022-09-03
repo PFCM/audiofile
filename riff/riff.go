@@ -16,6 +16,7 @@ type Chunk struct {
 	Size int
 	// Reader is a reader which will read the whole chunk. It
 	// will return io.EOF after Size bytes.
+	// TODO: maybe this should be embedded?
 	Reader io.Reader
 }
 
@@ -121,4 +122,130 @@ func readChunkHeader(r io.Reader, ch *chunkHeader) error {
 	// There will be padding if the size is an odd number.
 	ch.pad = ch.size%2 == 1
 	return nil
+}
+
+// Writer writes RIFF files.
+type Writer struct {
+	ws io.WriteSeeker
+	// written is the number of bytes written into the overall RIFF chunk.
+	written uint32
+
+	scratch []byte
+}
+
+// NewWriter constructs a new Writer, ready to write RIFF chunks.
+func NewWriter(ws io.WriteSeeker, form string) (*Writer, error) {
+	// First write the RIFF header, the form id and empty space
+	// for the size.
+	hdr := []byte{'R', 'I', 'F', 'F'}
+	if len(form) != 4 {
+		return nil, fmt.Errorf("invalid form ID: %q", form)
+	}
+	hdr = append(hdr, []byte(form)...)
+	hdr = append(hdr, 0, 0, 0, 0)
+
+	if _, err := ws.Write(hdr); err != nil {
+		return nil, err
+	}
+	return &Writer{ws: ws}, nil
+}
+
+// NewChunk starts a new chunk, returning a writer for the caller to write the
+// data portion to. Closing the returned writer ends the chunk.
+func (w *Writer) NewChunk(identifier string) (io.WriteCloser, error) {
+	// First write the identifier and some empty space for the size.
+	if len(identifier) != 4 {
+		return nil, fmt.Errorf("invalid chunk identifier: %q", identifier)
+	}
+	if err := w.write([]byte(identifier)); err != nil {
+		return nil, err
+	}
+	if err := w.write(w.uint32(0)); err != nil {
+		return nil, err
+	}
+	return newChunkWriter(w.ws), nil
+}
+
+// WriteChunk writes appropriate chunk metadata, and copies all the data from
+// the chunks reader into the writer. It should not be called if a writer from
+// NewChunk is active.
+func (w *Writer) WriteChunk(c *Chunk) error {
+	if len(c.Identifier) != 4 {
+		return fmt.Errorf("invalid chunk identifier: %q", c.Identifier)
+	}
+	if err := w.write([]byte(c.Identifier)); err != nil {
+		return err
+	}
+	if err := w.write(w.uint32(uint32(c.Size))); err != nil {
+		return err
+	}
+	n, err := io.Copy(w.ws, c.Reader)
+	w.written += uint32(n)
+	return err
+}
+
+// write behaves like w.ws.Write, except that it updates the Writers byte
+// counter by the number of bytes written.
+func (w *Writer) write(p []byte) error {
+	n, err := w.ws.Write(p)
+	w.written += uint32(n)
+	return err
+}
+
+// Close closes the writer and finalizes the metadata. It does not close the
+// underlying writer.
+func (w *Writer) Close() error {
+	// All we need to write is the size.
+	if _, err := w.ws.Seek(4, io.SeekStart); err != nil {
+		return err
+	}
+	_, err := w.ws.Write(w.uint32(w.written))
+	return err
+}
+
+// uint32 encodes a uint32 appropriately into w.scratch and returns the slice.
+// The data is only valid until the next time someone uses w.scratch.
+func (w *Writer) uint32(u uint32) []byte {
+	return binary.LittleEndian.AppendUint32(w.getScratch(4)[:0], u)
+}
+
+func (w *Writer) getScratch(n int) []byte {
+	if cap(w.scratch) < n {
+		w.scratch = make([]byte, n)
+	}
+	return w.scratch[:n]
+}
+
+// chunkWriter implements io.WriteCloser. When it is closed, it writes how many
+// bytes it has written.
+type chunkWriter struct {
+	ws      io.WriteSeeker
+	written uint32
+}
+
+func newChunkWriter(ws io.WriteSeeker) *chunkWriter {
+	return &chunkWriter{ws: ws}
+}
+
+func (c *chunkWriter) Write(p []byte) (int, error) {
+	n, err := c.ws.Write(p)
+	c.written += uint32(n)
+	return n, err
+}
+
+func (c *chunkWriter) Close() error {
+	// Seek back 4 bytes further than we have written.
+	if _, err := c.ws.Seek(-(int64(c.written) + 4), io.SeekCurrent); err != nil {
+		return err
+	}
+	// Write the size.
+	// TODO: reuse the buffer
+	var buf [4]byte
+	if _, err := c.ws.Write(binary.LittleEndian.AppendUint32(buf[:0], c.written)); err != nil {
+		return err
+	}
+	// seek back to the end
+	_, err := c.ws.Seek(0, io.SeekEnd)
+	// TODO: write the pad byte
+	return err
 }
