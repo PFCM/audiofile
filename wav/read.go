@@ -50,6 +50,8 @@ type fmtChunk struct {
 	subFormat          Format // optional, and probably overly simplistic
 }
 
+var fmtMagic = [14]byte{0x0, 0x0, 0x0, 0x0, 0x10, 0x0, 0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71}
+
 func readFmtChunk(r io.Reader) (fc fmtChunk, err error) {
 	// any eof is an unexpected eof.
 	defer func() {
@@ -125,8 +127,7 @@ func readFmtChunk(r io.Reader) (fc fmtChunk, err error) {
 			// ok
 		}
 		// The remainder should a specific magic string.
-		magic := []byte{0x0, 0x0, 0x0, 0x0, 0x10, 0x0, 0x80, 0, 0, 0xAA, 0, 0x38, 0x9B, 0x71}
-		if !bytes.Equal(magic, raw) {
+		if !bytes.Equal(fmtMagic[:], raw) {
 			return fmtChunk{}, fmt.Errorf("format %s, bad magic string (%x) in subformat", fc.format, raw)
 		}
 		return fc, nil
@@ -244,6 +245,7 @@ func (r *Reader) Read8PCM(data [][]byte) (int, error) {
 		// It's already PCM, but we may have to reduce the bit depth.
 		switch bd := r.BitDepth(); {
 		case bd <= 8:
+
 			// 1 byte samples, easy.
 			nextSample = nextByte
 		case bd <= 16:
