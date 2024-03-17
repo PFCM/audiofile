@@ -102,6 +102,9 @@ func readFmtChunk(r io.Reader) (fc fmtChunk, err error) {
 			return fmtChunk{}, fmt.Errorf("format %s, expect 8 bits per sample, got %d", fc.format, fc.bitsPerSample)
 		}
 		return fc, nil
+	case IEEEFloat:
+		// TODO: anything to validate here?
+		return fc, nil
 	case Extensible:
 		// The size of the extension has to be 22, so read the next 24
 		// bytes.
@@ -372,7 +375,7 @@ func (r *Reader) Read64Float(data [][]float64) (int, error) {
 			nextSample = nextFloat64
 		default:
 			// wow
-			return 0, fmt.Errorf("bit depth %d -> 32 not implemented", bd)
+			return 0, fmt.Errorf("bit depth %d -> 64 not implemented", bd)
 		}
 	}
 	return readInto(data, r, nextSample)
@@ -390,16 +393,21 @@ func readInto[T any](data [][]T, r *Reader, next func([]byte) (T, []byte)) (int,
 		return 0, err
 	}
 	// decode and de-interleave
-	for j := range data[0] {
+	// TODO: handle partial reads better, make sure we've at least got the same
+	// amount of samples for each channel, etc.
+	readSamples := 0
+	for j := 0; j < len(data[0]) && len(raw) > 0; j++ {
 		for c := range data {
+			// TODO: could panic, should check and ErrUnexpectedEOF?
 			data[c][j], raw = next(raw)
 		}
+		readSamples++
 	}
 	if len(raw) != 0 {
 		// TODO: not zero
-		return 0, fmt.Errorf("internal error: could use all the bytes: %d/%d left", len(raw), nBytes)
+		return 0, fmt.Errorf("internal error: could not use all the bytes: %d/%d left", len(raw), nBytes)
 	}
-	return nSamples, nil
+	return readSamples, nil
 }
 
 // readN reads a certain number of bytes into the scratch buffer and returns it.
@@ -409,6 +417,9 @@ func (r *Reader) readN(n int) ([]byte, error) {
 	}
 	scratch := r.scratch[:n]
 	gotN, err := io.ReadFull(r, scratch)
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		err = nil // we'll return a normal EOF later
+	}
 	return scratch[:gotN], err
 }
 
@@ -430,7 +441,7 @@ func nextInt16(raw []byte) (int16, []byte) {
 // bytes.
 func nextFloat32(raw []byte) (float32, []byte) {
 	bits := binary.LittleEndian.Uint32(raw)
-	return math.Float32frombits(bits), raw[:4]
+	return math.Float32frombits(bits), raw[4:]
 }
 
 // nextFloat64 reads a little-endian IEEE-754 64 bit float from the first 8
@@ -438,7 +449,7 @@ func nextFloat32(raw []byte) (float32, []byte) {
 // bytes.
 func nextFloat64(raw []byte) (float64, []byte) {
 	bits := binary.LittleEndian.Uint64(raw)
-	return math.Float64frombits(bits), raw[:8]
+	return math.Float64frombits(bits), raw[8:]
 }
 
 // int16ToByte converts a two's complement int16 sample into an offset byte.
