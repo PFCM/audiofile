@@ -16,8 +16,7 @@ type Chunk struct {
 	Size int
 	// Reader is a reader which will read the whole chunk. It
 	// will return io.EOF after Size bytes.
-	// TODO: maybe this should be embedded?
-	Reader io.Reader
+	io.Reader
 }
 
 // Reader reads RIFF files, one chunk at a time. It does the smallest amount of
@@ -141,13 +140,16 @@ func NewWriter(ws io.WriteSeeker, form string) (*Writer, error) {
 	if len(form) != 4 {
 		return nil, fmt.Errorf("invalid form ID: %q", form)
 	}
-	hdr = append(hdr, []byte(form)...)
 	hdr = append(hdr, 0, 0, 0, 0)
+	hdr = append(hdr, []byte(form)...)
 
 	if _, err := ws.Write(hdr); err != nil {
 		return nil, err
 	}
-	return &Writer{ws: ws}, nil
+	return &Writer{
+		ws:      ws,
+		written: 4, // The form counts.
+	}, nil
 }
 
 // NewChunk starts a new chunk, returning a writer for the caller to write the
@@ -163,7 +165,7 @@ func (w *Writer) NewChunk(identifier string) (io.WriteCloser, error) {
 	if err := w.write(w.uint32(0)); err != nil {
 		return nil, err
 	}
-	return newChunkWriter(w.ws), nil
+	return newChunkWriter(w), nil
 }
 
 // WriteChunk writes appropriate chunk metadata, and copies all the data from
@@ -219,33 +221,38 @@ func (w *Writer) getScratch(n int) []byte {
 // chunkWriter implements io.WriteCloser. When it is closed, it writes how many
 // bytes it has written.
 type chunkWriter struct {
-	ws      io.WriteSeeker
+	w       *Writer
 	written uint32
 }
 
-func newChunkWriter(ws io.WriteSeeker) *chunkWriter {
-	return &chunkWriter{ws: ws}
+func newChunkWriter(w *Writer) *chunkWriter {
+	return &chunkWriter{w: w}
 }
 
 func (c *chunkWriter) Write(p []byte) (int, error) {
-	n, err := c.ws.Write(p)
+	n, err := c.w.ws.Write(p)
 	c.written += uint32(n)
 	return n, err
 }
 
 func (c *chunkWriter) Close() error {
 	// Seek back 4 bytes further than we have written.
-	if _, err := c.ws.Seek(-(int64(c.written) + 4), io.SeekCurrent); err != nil {
+	if _, err := c.w.ws.Seek(-(int64(c.written) + 4), io.SeekCurrent); err != nil {
 		return err
 	}
 	// Write the size.
 	// TODO: reuse the buffer
 	var buf [4]byte
-	if _, err := c.ws.Write(binary.LittleEndian.AppendUint32(buf[:0], c.written)); err != nil {
+	if _, err := c.w.ws.Write(binary.LittleEndian.AppendUint32(buf[:0], c.written)); err != nil {
 		return err
 	}
 	// seek back to the end
-	_, err := c.ws.Seek(0, io.SeekEnd)
+	_, err := c.w.ws.Seek(0, io.SeekEnd)
+	if err != nil {
+		return err
+	}
 	// TODO: write the pad byte
-	return err
+	// update the total size
+	c.w.written += c.written
+	return nil
 }
