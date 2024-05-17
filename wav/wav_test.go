@@ -3,10 +3,12 @@ package wav
 import (
 	"bytes"
 	"encoding/binary"
-	"io/fs"
+	"io"
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/google/go-cmp/cmp"
 )
 
 func cat(bs ...[]byte) []byte {
@@ -190,29 +192,99 @@ func TestReadFmtChunk(t *testing.T) {
 	}
 }
 
-func TestRead(t *testing.T) {
-	files, err := fs.Glob(os.DirFS("../testdata"), "*")
+func TestRoundTrip16PCMTo16PCM(t *testing.T) {
+	raw, err := os.ReadFile("../testdata/kick.wav")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, name := range files {
-		t.Run(name, func(t *testing.T) {
-			path := filepath.Join("../testdata", name)
-			f, err := os.Open(path)
-			if err != nil {
-				t.Fatalf("opening file: %v", err)
-			}
-			defer f.Close()
-			r, err := NewReader(f)
-			if err != nil {
-				t.Fatalf("opening WAV reader: %v", err)
-			}
-			samples, err := ReadFull8PCM(r)
 
-			t.Fatal(samples, len(samples), len(samples[0]))
+	r, err := NewReader(bytes.NewReader(raw))
+	if err != nil {
+		t.Fatal(err)
+	}
 
-			t.Fatalf("format: %v, samplerate: %d, bit depth: %d, channels: %d, %d samples",
-				r.Format(), r.Samplerate(), r.BitDepth(), r.Channels(), r.Samples())
-		})
+	all := make([][]int16, r.Channels())
+	for i := range all {
+		all[i] = make([]int16, r.Samples())
+	}
+	// TODO: test smaller (and mismatched) reads and writes.
+	if _, err := r.Read16PCM(all); err != nil {
+		t.Fatal(err)
+	}
+
+	path := filepath.Join(t.TempDir(), t.Name()+".wav")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// w, err := r.EquivalentWriter(f)
+	w, err := NewWriter(f, FileFormat{
+		Format:     PCM,
+		BitDepth:   16,
+		Channels:   1,
+		SampleRate: 44100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := w.Write16PCM(all); err != nil {
+		t.Fatal(err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	diff(t, got, raw)
+}
+
+func diff(t *testing.T, got, want []byte) {
+	t.Helper()
+	// Double check the initial RIFF chunk directly, mostly to
+	// ensure we've written the correct size. The header is just a
+	// 4 byte ID and a 4 byte size.
+	if d := cmp.Diff(got[:8], want[:8]); d != "" {
+		t.Errorf("RIFF header mismatch (-got, +want):\n%v", d)
+	}
+	// The next 4 bytes are the RIFF form type, which should always
+	// be "WAVE".
+	wave := []byte("WAVE")
+	if gf, wf := got[8:12], want[8:12]; !(bytes.Equal(gf, wf) && bytes.Equal(wave, gf)) {
+		t.Errorf("RIFF form type mismatch:\n got: %q\nwant: %q\nfile: %q", gf, wf, wave)
+	}
+
+	gr, err := NewReader(bytes.NewReader(got))
+	if err != nil {
+		t.Fatalf("Opening original file: %v", err)
+	}
+	wr, err := NewReader(bytes.NewReader(want))
+	if err != nil {
+		t.Fatalf("Opening file we wrote: %v", err)
+	}
+
+	// Check the formats are the same.
+	if d := cmp.Diff(gr.fmt, wr.fmt, cmp.AllowUnexported(fmtChunk{})); d != "" {
+		t.Errorf("Format difference (-got, +want):\n%v", d)
+	}
+	// Check the data is byte-byte identical.
+	wantData, err := io.ReadAll(wr.data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gotData, err := io.ReadAll(gr.data)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if d := cmp.Diff(gotData, wantData); d != "" {
+		t.Errorf("Data difference (-got, +want):\n%v", d)
 	}
 }

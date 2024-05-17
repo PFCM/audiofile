@@ -201,6 +201,12 @@ func NewReader(r io.Reader) (*Reader, error) {
 	}, nil
 }
 
+// EquivalentWriter returns a *Writer that writes to the provided WriteSeeker,
+// with the same format as r.
+func (r *Reader) EquivalentWriter(ws io.WriteSeeker) (*Writer, error) {
+	return newWriter(ws, r.fmt)
+}
+
 // Format returns the sample format of the wav file. If the main format is
 // Extensible, then this returns the subformat.
 func (r *Reader) Format() Format {
@@ -289,7 +295,7 @@ func (r *Reader) Read16PCM(data [][]int16) (int, error) {
 			return 0, fmt.Errorf("bit depth %d -> int16 not implemented", bd)
 		}
 	default:
-		return 0, fmt.Errorf("format %v -> PCM not implementated", f)
+		return 0, fmt.Errorf("format %v -> PCM not implemented", f)
 	}
 	return readInto(data, r, nextSample)
 }
