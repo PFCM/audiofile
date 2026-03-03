@@ -510,7 +510,7 @@ func makeSlices[T any](iSize, jSize int) [][]T {
 	var (
 		out [][]T
 	)
-	for i := 0; i < iSize; i++ {
+	for i := range iSize {
 		out = append(out, base[i*jSize:(i+1)*jSize])
 	}
 	return out

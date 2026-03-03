@@ -20,7 +20,7 @@ func TestRoundTrip(t *testing.T) {
 		data []byte
 	}
 	var chunks []chunk
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		c := chunk{
 			id:   fmt.Sprintf("%04d", i),
 			data: make([]byte, rand.Intn(1000)),

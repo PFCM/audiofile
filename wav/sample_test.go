@@ -12,7 +12,7 @@ import (
 func TestRoundTrip(t *testing.T) {
 	byteValues := func() iter.Seq[byte] {
 		return func(yield func(byte) bool) {
-			for i := 0; i < 256; i++ {
+			for i := range 256 {
 				if !yield(byte(i)) {
 					return
 				}
@@ -81,7 +81,7 @@ func TestDeinterleave(t *testing.T) {
 			out [][]int
 			tmp = make([]int, n)
 		)
-		for i := 0; i < num; i++ {
+		for i := range num {
 			tmp[i%n] = i
 			if i%n == n-1 {
 				out = append(out, slices.Clone(tmp))
