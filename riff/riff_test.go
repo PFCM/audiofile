@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
-	"math/rand"
+	"math/rand/v2"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,16 +19,20 @@ func TestRoundTrip(t *testing.T) {
 		id   string
 		data []byte
 	}
-	var chunks []chunk
-	for i := range 5 {
+	var (
+		src = rand.NewChaCha8([32]byte{})
+		rng = rand.New(src)
+		chunks []chunk
+	)
+	for i := range 11 {
 		c := chunk{
 			id:   fmt.Sprintf("%04d", i),
-			data: make([]byte, rand.Intn(1000)),
+			data: make([]byte, rng.IntN(1000)),
 		}
-		_, err := rand.Read(c.data)
-		if err != nil {
+		if _, err := src.Read(c.data); err != nil {
 			t.Fatal(err)
 		}
+		chunks = append(chunks, c)
 	}
 
 	// It would be nicer to just do this in memory, but bytes.Buffer is not
@@ -49,8 +53,10 @@ func TestRoundTrip(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if _, err := cw.Write(c.data); err != nil {
+		if n, err := cw.Write(c.data); err != nil {
 			t.Fatal(err)
+		} else if n != len(c.data) {
+			t.Fatalf("didn't write all the bytes?\nexpected: %d, got: %d", n, len(c.data))
 		}
 		if err := cw.Close(); err != nil {
 			t.Fatal(err)
@@ -87,7 +93,7 @@ func TestRoundTrip(t *testing.T) {
 	}
 
 	var got []chunk
-	for {
+	for i := 0; ; i++ {
 		chnk, err := r.ReadChunk()
 		if err == io.EOF {
 			break
@@ -100,7 +106,7 @@ func TestRoundTrip(t *testing.T) {
 			t.Fatal(err)
 		}
 		if len(data) != chnk.Size {
-			t.Fatalf("Size mismatch: Chunk has size %d, read %d bytes", chnk.Size, len(data))
+			t.Fatalf("Size mismatch: Chunk %d has size %x, read %x bytes", i, chnk.Size, len(data))
 		}
 		got = append(got, chunk{
 			id:   chnk.Identifier,
@@ -113,7 +119,7 @@ func TestRoundTrip(t *testing.T) {
 		t.Fatalf("Wrong number of chunks: wrote %d, read %d", len(chunks), len(got))
 	}
 	for i := range chunks {
-		if d := cmp.Diff(got[i], chunks[i]); d != "" {
+		if d := cmp.Diff(got[i], chunks[i], cmp.AllowUnexported(chunk{})); d != "" {
 			t.Errorf("Chunk %d: mismatch (-got, +want):\n%v", i, d)
 		}
 	}

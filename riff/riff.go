@@ -152,22 +152,6 @@ func NewWriter(ws io.WriteSeeker, form string) (*Writer, error) {
 	}, nil
 }
 
-// NewChunk starts a new chunk, returning a writer for the caller to write the
-// data portion to. Closing the returned writer ends the chunk.
-func (w *Writer) NewChunk(identifier string) (io.WriteCloser, error) {
-	// First write the identifier and some empty space for the size.
-	if len(identifier) != 4 {
-		return nil, fmt.Errorf("invalid chunk identifier: %q", identifier)
-	}
-	if err := w.write([]byte(identifier)); err != nil {
-		return nil, err
-	}
-	if err := w.write(w.uint32(0)); err != nil {
-		return nil, err
-	}
-	return newChunkWriter(w), nil
-}
-
 // WriteChunk writes appropriate chunk metadata, and copies all the data from
 // the chunks reader into the writer. It should not be called if a writer from
 // NewChunk is active.
@@ -183,7 +167,15 @@ func (w *Writer) WriteChunk(c *Chunk) error {
 	}
 	n, err := io.Copy(w.ws, c.Reader)
 	w.written += uint32(n)
-	return err
+	if err != nil {
+		return err
+	}
+	if w.written%2 == 1 {
+		if err := w.write([]byte{0}); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // write behaves like w.ws.Write, except that it updates the Writers byte
@@ -195,7 +187,7 @@ func (w *Writer) write(p []byte) error {
 }
 
 // Close closes the writer and finalizes the metadata. It does not close the
-// underlying writer.
+// underlying writer but it does seek it back somewhere near the beginning.
 func (w *Writer) Close() error {
 	// All we need to write is the size.
 	if _, err := w.ws.Seek(4, io.SeekStart); err != nil {
@@ -218,8 +210,24 @@ func (w *Writer) getScratch(n int) []byte {
 	return w.scratch[:n]
 }
 
+// NewChunk starts a new chunk, returning a writer for the caller to write the
+// data portion to. Closing the returned writer ends the chunk.
+func (w *Writer) NewChunk(identifier string) (io.WriteCloser, error) {
+	// First write the identifier and some empty space for the size.
+	if len(identifier) != 4 {
+		return nil, fmt.Errorf("invalid chunk identifier: %q", identifier)
+	}
+	if err := w.write([]byte(identifier)); err != nil {
+		return nil, err
+	}
+	if err := w.write(w.uint32(0)); err != nil {
+		return nil, err
+	}
+	return newChunkWriter(w), nil
+}
+
 // chunkWriter implements io.WriteCloser. When it is closed, it writes how many
-// bytes it has written.
+// bytes have been written to the chunk.
 type chunkWriter struct {
 	w       *Writer
 	written uint32
@@ -236,23 +244,29 @@ func (c *chunkWriter) Write(p []byte) (int, error) {
 }
 
 func (c *chunkWriter) Close() error {
-	// Seek back 4 bytes further than we have written.
+	// Seek back 4 bytes further than we have written to overwrite the empty
+	// size that we wrote when the chunk was opened.
 	if _, err := c.w.ws.Seek(-(int64(c.written) + 4), io.SeekCurrent); err != nil {
 		return err
 	}
 	// Write the size.
-	// TODO: reuse the buffer
-	var buf [4]byte
-	if _, err := c.w.ws.Write(binary.LittleEndian.AppendUint32(buf[:0], c.written)); err != nil {
+	if _, err := c.w.ws.Write(c.w.uint32(c.written)); err != nil {
 		return err
 	}
 	// seek back to the end
-	_, err := c.w.ws.Seek(0, io.SeekEnd)
-	if err != nil {
+	if _, err := c.w.ws.Seek(0, io.SeekEnd); err != nil {
 		return err
 	}
-	// TODO: write the pad byte
-	// update the total size
+	// write a pad byte if the size is odd
+	if c.written%2 == 1 {
+		// note write bumps c.w.written, and we do it after having
+		// written the size of the chunk. This is because the size of
+		// this chunk should not include the pad byte, but the overall
+		// size of the RIFF chunk should.
+		if err := c.w.write([]byte{0}); err != nil {
+			return err
+		}
+	}
 	c.w.written += c.written
 	return nil
 }
